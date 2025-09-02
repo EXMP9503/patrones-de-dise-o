@@ -1,0 +1,248 @@
+
+public interface DocumentObserver {
+    void update(DocumentJob job, String eventType, String message);
+}
+
+
+public interface DocumentSubject {
+    void registerObserver(DocumentObserver observer);
+    void removeObserver(DocumentObserver observer);
+    void notifyObservers(DocumentJob job, String eventType, String message);
+}
+
+
+
+
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class DocumentProcessor implements DocumentSubject {
+    private List<DocumentObserver> observers = new ArrayList<>();
+    private ConfigurationManager configManager;
+    private LegacyArchiver archiver;
+    
+    
+    public DocumentProcessor(ConfigurationManager configManager, LegacyArchiver archiver) {
+        this.configManager = configManager;
+        this.archiver = archiver;
+    }
+    
+    @Override
+    public void registerObserver(DocumentObserver observer) {
+        observers.add(observer);
+    }
+    
+    @Override
+    public void removeObserver(DocumentObserver observer) {
+        observers.remove(observer);
+    }
+    
+    @Override
+    public void notifyObservers(DocumentJob job, String eventType, String message) {
+        for (DocumentObserver observer : observers) {
+            observer.update(job, eventType, message);
+        }
+    }
+    
+    public void processDocument(DocumentJob job) {
+        notifyObservers(job, "PROCESS_START", "Iniciando procesamiento del trabajo...");
+        
+        // Validaciones
+        if (job.getRequestingUser() == null) {
+            notifyObservers(job, "VALIDATION_ERROR", "Error: Usuario no especificado.");
+            return;
+        }
+        
+        File file = new File(job.getSourceFilePath());
+        if (!file.exists()) {
+            notifyObservers(job, "VALIDATION_ERROR", "Error: El archivo no existe.");
+            return;
+        }
+        
+        if (file.length() > configManager.getMaxFileSize()) {
+            notifyObservers(job, "VALIDATION_ERROR", "Error: El archivo es demasiado grande.");
+            return;
+        }
+        
+        if (job.isHighPriority() && !job.getRequestingUser().getPlan().equals("Premium")) {
+            notifyObservers(job, "VALIDATION_ERROR", 
+                "Error: Solo usuarios Premium pueden usar alta prioridad.");
+            return;
+        }
+        
+       
+        byte[] convertedFile;
+        try {
+            switch (job.getOutputFormat()) {
+                case "PDF":
+                    notifyObservers(job, "CONVERSION_START", "Convirtiendo a PDF...");
+                    convertedFile = convertToPDF(job);
+                    break;
+                case "DOCX":
+                    notifyObservers(job, "CONVERSION_START", "Convirtiendo a DOCX...");
+                    convertedFile = convertToDOCX(job);
+                    break;
+                default:
+                    notifyObservers(job, "CONVERSION_START", "Convirtiendo a TXT...");
+                    convertedFile = convertToTXT(job);
+                    break;
+            }
+            
+           
+            notifyObservers(job, "CONVERSION_SUCCESS", "Conversión completada exitosamente");
+            
+        } catch (Exception e) {
+            notifyObservers(job, "CONVERSION_ERROR", "Error en la conversión: " + e.getMessage());
+            return;
+        }
+        
+        // Guardado en archivo
+        try {
+            notifyObservers(job, "ARCHIVING_START", "Guardando documento...");
+            archiver.save(convertedFile, "archive/" + UUID.randomUUID().toString());
+            notifyObservers(job, "ARCHIVING_SUCCESS", "Documento guardado exitosamente");
+        } catch (Exception e) {
+            notifyObservers(job, "ARCHIVING_ERROR", "Error al guardar: " + e.getMessage());
+            return;
+        }
+        
+       
+        try {
+            triggerBilling(job.getRequestingUser(), job.getOutputFormat());
+            notifyObservers(job, "BILLING_SUCCESS", "Facturación procesada");
+        } catch (Exception e) {
+            notifyObservers(job, "BILLING_ERROR", "Error en facturación: " + e.getMessage());
+        }
+        
+        notifyObservers(job, "PROCESS_COMPLETE", "Trabajo finalizado exitosamente");
+    }
+    
+    private byte[] convertToPDF(DocumentJob job) { /* implementación */ return new byte[100]; }
+    private byte[] convertToDOCX(DocumentJob job) { /* implementación */ return new byte[120]; }
+    private byte[] convertToTXT(DocumentJob job) { /* implementación */ return new byte[50]; }
+    private void triggerBilling(User user, String format) { /* Lógica de facturación */ }
+}
+
+
+
+
+
+
+
+public class SlackNotifier implements DocumentObserver {
+    private String webhookUrl;
+    private String channel;
+    
+    public SlackNotifier(String webhookUrl, String channel) {
+        this.webhookUrl = webhookUrl;
+        this.channel = channel;
+    }
+    
+    @Override
+    public void update(DocumentJob job, String eventType, String message) {
+        // Solo notificar eventos importantes
+        if (shouldNotify(eventType)) {
+            sendSlackNotification(job, eventType, message);
+        }
+    }
+    
+    private boolean shouldNotify(String eventType) {
+        // Definir qué eventos merecen una notificación por Slack
+        return eventType.equals("VALIDATION_ERROR") ||
+               eventType.equals("CONVERSION_ERROR") ||
+               eventType.equals("ARCHIVING_ERROR") ||
+               eventType.equals("PROCESS_COMPLETE");
+    }
+    
+    private void sendSlackNotification(DocumentJob job, String eventType, String message) {
+        // Lógica para enviar mensaje a Slack
+        String slackMessage = String.format(
+            "[%s] Documento: %s - Usuario: %s - %s",
+            eventType,
+            job.getSourceFilePath(),
+            job.getUserEmail(),
+            message
+        );
+        
+        
+        System.out.println("Enviando a Slack (" + channel + "): " + slackMessage);
+        
+        
+      
+    }
+}
+
+
+
+
+public class EmailNotifier implements DocumentObserver {
+    private EmailService emailService;
+    
+    public EmailNotifier(EmailService emailService) {
+        this.emailService = emailService;
+    }
+    
+    @Override
+    public void update(DocumentJob job, String eventType, String message) {
+        if (eventType.equals("PROCESS_COMPLETE")) {
+            emailService.send(job.getUserEmail(), "Procesamiento completado", message);
+        } else if (eventType.equals("VALIDATION_ERROR") || 
+                   eventType.equals("CONVERSION_ERROR") || 
+                   eventType.equals("ARCHIVING_ERROR")) {
+            emailService.send(job.getUserEmail(), "Error en procesamiento", message);
+        }
+    }
+}
+
+
+public class LoggerObserver implements DocumentObserver {
+    private SystemLog systemLog;
+    
+    public LoggerObserver(SystemLog systemLog) {
+        this.systemLog = systemLog;
+    }
+    
+    @Override
+    public void update(DocumentJob job, String eventType, String message) {
+        String logMessage = String.format("[%s] %s - %s", eventType, job.getSourceFilePath(), message);
+        
+        if (eventType.contains("ERROR")) {
+            systemLog.error(logMessage);
+        } else {
+            systemLog.info(logMessage);
+        }
+    }
+}
+
+
+
+
+
+
+// Ejemplo de configuración
+public class DocFlowEngine {
+    public static void main(String[] args) {
+        // Configuración de dependencias
+        ConfigurationManager configManager = new ConfigurationManager();
+        LegacyArchiver archiver = new LegacyArchiver();
+        EmailService emailService = new EmailService();
+        SystemLog systemLog = new SystemLog();
+        
+        // Crear procesador
+        DocumentProcessor processor = new DocumentProcessor(configManager, archiver);
+        
+        // Registrar observadores
+        processor.registerObserver(new LoggerObserver(systemLog));
+        processor.registerObserver(new EmailNotifier(emailService));
+        processor.registerObserver(new SlackNotifier("https://hooks.slack.com/...", "#documents"));
+        
+        // Procesar documento
+        DocumentJob job = new DocumentJob("document.txt", "PDF", "Confidential", false, user);
+        processor.processDocument(job);
+    }
+}
+
+
+
+
